@@ -10,6 +10,8 @@ var DB = {
   comments: []
 };
 
+console.log(DB);
+
 // Setup Middleware
 app.use(bodyParser.json());
 app.use(responseTime());
