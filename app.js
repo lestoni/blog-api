@@ -2,19 +2,104 @@
 var express      = require('express');
 var bodyParser   = require('body-parser');
 var responseTime = require('response-time');
+var xtend        = require('xtend');
 
 var app = express();
 
 var DB = {
   articles: [],
-  comments: []
+  comments: [],
+  api_keys: [
+    '1234567890',
+    'admin'
+  ],
+  users: [{
+    type: 'admin',
+    key: 'admin'
+  },{
+    type: 'consumer',
+    key: '1234567890'
+  }]
 };
-
-console.log(DB);
 
 // Setup Middleware
 app.use(bodyParser.json());
+
 app.use(responseTime());
+
+app.use(authenticate());
+
+// Authentication Middleware
+// opts:
+//  - open_endpoints: []
+//  - set_auth: true
+function authenticate(opts) {
+
+  var defaults = {
+    open_endpoints: [],
+    set_auth: true
+  };
+
+  defaults = xtend(defaults, opts);
+
+  return function middleware(req, res, next) {
+    if(!defaults.set_auth) {
+      next();
+
+    } else {
+      var auth = req.get('Authorization');
+
+      if(!auth) {
+        res.status(403);
+        res.json({
+          error: true,
+          message: 'Very Funny!!'
+        });
+
+        return;
+      } else {
+
+        var tokens = auth.trim().split(/\s+/);
+
+        if(tokens[0] !== 'Bearer') {
+
+          res.status(403);
+          res.json({
+            error: true,
+            message: 'Authentication Realm should be Bearer'
+          });
+
+          return;
+        }
+
+        var isKnown = false;
+        var _user;
+
+        DB.users.forEach(function iter(user) {
+          if(user.key === tokens[1]) {
+            _user = user;
+            isKnown = true;
+          }
+        });
+
+        if(!isKnown) {
+          res.status(403);
+          res.json({
+            error: true,
+            message: 'Authentication Token Is Not Recognized!'
+          });
+
+          return;
+        }
+
+
+      }
+
+        next();
+    }
+
+  };
+}
 
 // Design models/entities
 // Article:
@@ -43,11 +128,13 @@ app.use(responseTime());
 //  - /articles/:id/comments
 
 // GET /articles
+// @TODO Add Authorization
 app.get('/articles', function getArticles(req, res, next) {
   res.json(DB.articles);
 });
 
 // GET /comments
+// @TODO Add Authorization
 app.get('/comments', function getComments(req, res, next) {
   res.json(DB.comments);
 });
@@ -64,7 +151,16 @@ app.get('/comments/:commentId', function getComment(req, res, next) {
     }
   });
 
-  res.json(comment || {});
+  if(comment) {
+    res.json(comment);
+
+  } else {
+    res.status(404);
+    res.json({
+      error: true,
+      message: 'Comment Requested Not Found!'
+    });
+  }
 
 });
 
@@ -81,7 +177,16 @@ app.get('/articles/:articleId', function getArticles(req, res, next) {
     }
   });
 
-  res.json(article || {});
+  if(article) {
+    res.json(article);
+
+  } else {
+    res.status(404);
+    res.json({
+      error: true,
+      message: 'Article(' + req.params.articleId + ') Requested Not Found!'
+    });
+  }
 
 });
 
@@ -112,20 +217,31 @@ app.post('/articles', function createArticle(req, res, next) {
   var body    = req.body;
   var now     = new Date();
 
-  var article = {
-    id: '' + DB.articles.length,
-    author: body.author,
-    content: body.content,
-    title: body.title,
-    comments: [],
-    last_updated: now,
-    created_at: now
-  };
+  if(typeof body.author !== 'string') {
+    res.status(400);
+    res.json({
+      error: true,
+      message: 'Expected Author to be String Type'
+    });
+
+  } else {
+    var article = {
+      id: '' + DB.articles.length,
+      author: body.author,
+      content: body.content,
+      title: body.title,
+      comments: [],
+      last_updated: now,
+      created_at: now
+    };
 
 
-  DB.articles.push(article);
+    DB.articles.push(article);
 
-  res.json(article);
+    res.status(201);
+    res.json(article);
+  }
+
 });
 
 // POST /comments
@@ -162,6 +278,7 @@ app.post('/comments', function createComment(req, res, next) {
 //  - /articles/:id/comments
 
 // DELETE /articles
+// @TODO Add Authorization
 app.delete('/articles', function deleteArticles(req, res, next) {
   DB.articles = [];
 
@@ -171,6 +288,7 @@ app.delete('/articles', function deleteArticles(req, res, next) {
 });
 
 // DELETE /comments
+// @TODO Add Authorization
 app.delete('/comments', function deleteComment(req, res, next) {
   DB.comments = [];
 
@@ -258,6 +376,7 @@ app.delete('/articles/:articleId/comments', function deleteArticleComments(req, 
 //  - /articles/:id/comments
 
 // PUT /articles
+// @TODO Add Authorization
 app.put('/articles', function updateArticles(req, res, next) {
   var body = req.body;
 
@@ -277,6 +396,7 @@ app.put('/articles', function updateArticles(req, res, next) {
 });
 
 // PUT /comments
+// @TODO Add Authorization
 app.put('/comments', function updateComments(req, res, next) {
   var body = req.body;
 
