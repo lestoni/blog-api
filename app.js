@@ -3,8 +3,16 @@ var express      = require('express');
 var bodyParser   = require('body-parser');
 var responseTime = require('response-time');
 var xtend        = require('xtend');
+var mongoose     = require('mongoose');
 
 var app = express();
+
+
+mongoose.connect('mongodb://localhost/blog');
+
+mongoose.connection.on('connected', function connectionListener() {
+  console.log('I cant wait to go home!');
+});
 
 var DB = {
   articles: [],
@@ -19,7 +27,8 @@ var DB = {
   },{
     type: 'consumer',
     key: '1234567890'
-  }]
+  }],
+  tokens:[]
 };
 
 // Setup Middleware
@@ -93,6 +102,8 @@ function authenticate(opts) {
         }
 
 
+        req._user = _user;
+
       }
 
         next();
@@ -101,6 +112,8 @@ function authenticate(opts) {
   };
 }
 
+// AUTHORIZATION
+//
 // Design models/entities
 // Article:
 //  - id
@@ -130,17 +143,50 @@ function authenticate(opts) {
 // GET /articles
 // @TODO Add Authorization
 app.get('/articles', function getArticles(req, res, next) {
+
   res.json(DB.articles);
 });
 
 // GET /comments
 // @TODO Add Authorization
-app.get('/comments', function getComments(req, res, next) {
+// ONLY ADMIN CAN VIEW/PROCEED
+function getComments(req, res, next) {
   res.json(DB.comments);
-});
+}
+
+function authorize(type) {
+
+  return function middleware(req, res, next) {
+    // IF type is not okay - return error
+    // 401
+    //
+    // if okay call next
+    //
+    //
+    var user = req._user;
+
+    if(user.type !== type) {
+      res.status(401);
+      res.json({
+        error: true,
+        message: 'You are not authorized to complete this action! Go home!'
+      });
+
+      return;
+
+    } else {
+      next();
+
+    }
+
+  };
+
+}
+
+app.get('/comments', authorize('admin'),  getComments);
 
 // GET /comments/:id
-app.get('/comments/:commentId', function getComment(req, res, next) {
+app.get('/comments/:commentId',  function getComment(req, res, next) {
 
   var commentId = req.params.commentId;
   var comment;
@@ -485,6 +531,17 @@ app.put('/articles/:articleId/comments', function updateArticle(req, res, next) 
 
   res.json(article || {});
 
+});
+
+
+// Error Handling Middleware
+app.use(function errorHandler(err, req, res, next) {
+  res.status(500);
+  res.json({
+    error: true,
+    message: err.message,
+    type: err.name
+  });
 });
 
 app.listen(8000, function connectionListener() {
