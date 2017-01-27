@@ -8,39 +8,83 @@ var mongoose     = require('mongoose');
 var app = express();
 
 
+
+
 mongoose.connect('mongodb://localhost/blog');
 
 mongoose.connection.on('connected', function connectionListener() {
   console.log('I cant wait to go home!');
 });
 
-var DB = {
-  articles: [],
-  comments: [],
-  api_keys: [
-    '1234567890',
-    'admin'
-  ],
-  users: [{
-    type: 'admin',
-    key: 'admin'
-  },{
-    type: 'consumer',
-    key: '1234567890'
-  }],
-  tokens:[]
-};
+// DATA MODELLING
+//
+// Design models/entities
+// Article:
+//  - id
+//  - author
+//  - title
+//  - content
+//  - comments
+//  - created_at
+//  - last_updated
+//
+// Comment:
+//  - id
+//  - article(Reference)
+//  - content
+//  - created_at
+//  - last_updated
+//  - author
+
+var ArticleSchema = new mongoose.Schema({
+  author:     { type: String },
+  title:      { type: String },
+  content:    { type: String },
+  comments:     [{ type: mongoose.Schema.Types.ObjectId, ref: 'Comment' }],
+  created_at:   { type: Date  },
+  last_updated: { type: Date }
+});
+var Article = mongoose.model('Article', ArticleSchema);
+
+var CommentSchema = new mongoose.Schema({
+  article:    { type: mongoose.Schema.Types.ObjectId, ref: 'Article' },
+  content:    { type: String },
+  author:     { type: String },
+  created_at:     { type: Date  },
+  last_updated:   { type: Date }
+});
+var Comment = mongoose.model('Comment', CommentSchema);
+
+// - value
+var APIKeySchema = new mongoose.Schema({
+  value:          { type: String },
+  created_at:     { type: Date  },
+  last_updated:   { type: Date }
+});
+var APIKey  = mongoose.model('APIKey', APIKeySchema);
+
+// - type
+// - key
+var UserSchema  = new mongoose.Schema({
+  type:   { type: String },
+  key:    { type: mongoose.Schema.Types.ObjectId, ref: 'APIKey' },
+  created_at:     { type: Date  },
+  last_updated:   { type: Date }
+});
+var User  = mongoose.model('User', UserSchema);
 
 // Setup Middleware
 app.use(bodyParser.json());
 
 app.use(responseTime());
 
-app.use(authenticate());
+app.use(authenticate({
+  set_auth: false
+}));
 
 // Authentication Middleware
 // opts:
-//  - open_endpoints: []
+//g  - open_endpoints: []
 //  - set_auth: true
 function authenticate(opts) {
 
@@ -112,49 +156,7 @@ function authenticate(opts) {
   };
 }
 
-// AUTHORIZATION
-//
-// Design models/entities
-// Article:
-//  - id
-//  - author
-//  - title
-//  - content
-//  - comments
-//  - created_at
-//  - last_updated
-//
-// Comment:
-//  - id
-//  - article(Reference)
-//  - content
-//  - created_at
-//  - last_updated
-//  - author
-
-// Add CRUD endpoints
-// - GET(Reading/getting a resource)
-//  - /articles
-//  - /comments
-//  - /comments/:id
-//  - /articles/:id
-//  - /articles/:id/comments
-
-// GET /articles
-// @TODO Add Authorization
-app.get('/articles', function getArticles(req, res, next) {
-
-  res.json(DB.articles);
-});
-
-// GET /comments
-// @TODO Add Authorization
-// ONLY ADMIN CAN VIEW/PROCEED
-function getComments(req, res, next) {
-  res.json(DB.comments);
-}
-
-function authorize(type) {
+function authorize(types) {
 
   return function middleware(req, res, next) {
     // IF type is not okay - return error
@@ -164,8 +166,15 @@ function authorize(type) {
     //
     //
     var user = req._user;
+    var _isOk = false;
 
-    if(user.type !== type) {
+    types.forEach(function iter(type) {
+      if(user.type === type) {
+        _isOk = true;
+      }
+    });
+
+    if(!_isOk) {
       res.status(401);
       res.json({
         error: true,
@@ -183,7 +192,36 @@ function authorize(type) {
 
 }
 
-app.get('/comments', authorize('admin'),  getComments);
+// AUTHORIZATION
+
+// Add CRUD endpoints
+// - GET(Reading/getting a resource)
+//  - /articles
+//  - /comments
+//  - /comments/:id
+//  - /articles/:id
+//  - /articles/:id/comments
+
+// GET /articles
+app.get('/articles', function getArticles(req, res, next) {
+
+  Article.find({}, function getAllArticles(err, docs) {
+    if(err) {
+      return next(err);
+    }
+
+    res.json(docs);
+  });
+
+});
+
+// GET /comments
+// @TODO Add Authorization
+// ONLY ADMIN CAN VIEW/PROCEED
+
+app.get('/comments', function getComments(req, res, next) {
+
+});
 
 // GET /comments/:id
 app.get('/comments/:commentId',  function getComment(req, res, next) {
@@ -216,23 +254,13 @@ app.get('/articles/:articleId', function getArticles(req, res, next) {
   var articleId = req.params.articleId;
   var article;
 
-
-  DB.articles.forEach(function iterator(item, index, arr) {
-    if(articleId === item.id) {
-      article = item;
+  Article.findById(articleId, function cb(err, article) {
+    if(err) {
+      return next(err);
     }
-  });
 
-  if(article) {
     res.json(article);
-
-  } else {
-    res.status(404);
-    res.json({
-      error: true,
-      message: 'Article(' + req.params.articleId + ') Requested Not Found!'
-    });
-  }
+  });
 
 });
 
@@ -260,33 +288,31 @@ app.get('/articles/:articleId/comments', function getArticleComments(req, res, n
 
 // POST /articles
 app.post('/articles', function createArticle(req, res, next) {
+
   var body    = req.body;
   var now     = new Date();
 
-  if(typeof body.author !== 'string') {
-    res.status(400);
-    res.json({
-      error: true,
-      message: 'Expected Author to be String Type'
-    });
+  // CREATE AN ARTICLE TYPE
+  var article = new Article({
+    author: body.author,
+    content: body.content,
+    title: body.title,
+    last_updated: now,
+    created_at: now
+  });
 
-  } else {
-    var article = {
-      id: '' + DB.articles.length,
-      author: body.author,
-      content: body.content,
-      title: body.title,
-      comments: [],
-      last_updated: now,
-      created_at: now
-    };
-
-
-    DB.articles.push(article);
+  // SAVE THE NEW ARTICLE TO THE DB
+  article.save(function cb(err, article) {
+    if(err) {
+      return next(err);
+    }
 
     res.status(201);
     res.json(article);
-  }
+
+  });
+
+
 
 });
 
@@ -536,11 +562,15 @@ app.put('/articles/:articleId/comments', function updateArticle(req, res, next) 
 
 // Error Handling Middleware
 app.use(function errorHandler(err, req, res, next) {
-  res.status(500);
+  if(err.name === 'CastError') {
+    err.STATUS = 400;
+  }
+  res.status(err.STATUS || 500);
   res.json({
     error: true,
     message: err.message,
-    type: err.name
+    type: err.name,
+    status: err.STATUS || 500
   });
 });
 
