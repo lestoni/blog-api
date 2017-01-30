@@ -4,11 +4,9 @@ var bodyParser   = require('body-parser');
 var responseTime = require('response-time');
 var xtend        = require('xtend');
 var mongoose     = require('mongoose');
+var async        = require('async');
 
 var app = express();
-
-
-
 
 mongoose.connect('mongodb://localhost/blog');
 
@@ -79,7 +77,7 @@ app.use(bodyParser.json());
 app.use(responseTime());
 
 app.use(authenticate({
-  set_auth: false
+  set_auth: true
 }));
 
 // Authentication Middleware
@@ -106,7 +104,7 @@ function authenticate(opts) {
         res.status(403);
         res.json({
           error: true,
-          message: 'Very Funny!!'
+          message: 'Please set Authorization Key'
         });
 
         return;
@@ -125,32 +123,40 @@ function authenticate(opts) {
           return;
         }
 
-        var isKnown = false;
-        var _user;
-
-        DB.users.forEach(function iter(user) {
-          if(user.key === tokens[1]) {
-            _user = user;
-            isKnown = true;
+        // Retrieve API Key
+        APIKey.findOne({ value: tokens[1] }, function callback(err, key) {
+          // Pass any err to the Error Handler
+          if(err) {
+            return next(err);
           }
+
+          // If key not found === Key is not recognized
+          if(!key) {
+            res.status(403);
+            res.json({
+              error: true,
+              message: 'Authentication Token Is Not Recognized!'
+            });
+
+            return;
+          } else {
+            // If Key found == Retrieve the given user
+            User.findOne({ key: key._id }, function callback1(err, user) {
+              if(err) {
+                return next(err);
+              }
+
+              req._user = user;
+              next();
+            });
+          }
+
+
         });
 
-        if(!isKnown) {
-          res.status(403);
-          res.json({
-            error: true,
-            message: 'Authentication Token Is Not Recognized!'
-          });
-
-          return;
-        }
-
-
-        req._user = _user;
 
       }
 
-        next();
     }
 
   };
@@ -165,28 +171,39 @@ function authorize(types) {
     // if okay call next
     //
     //
-    var user = req._user;
-    var _isOk = false;
 
-    types.forEach(function iter(type) {
-      if(user.type === type) {
-        _isOk = true;
+    // Iterater through the types asynchronously
+    // and find the if any of the types is present
+    // hence is allowed!!
+    //
+    // Returns true if any of the types match the user
+    // type else returns false
+    async.some(types, function worker(type, done) {
+      User.findOne({ type: req._user.type }, function lookup(err, user) {
+        if(err) {
+          return done(err);
+        }
+
+        done(null, user);
+
+      });
+    }, function complete(err, isOk) {
+      if(err) {
+        return next(err);
+      }
+
+      if(isOk) {
+        return next();
+      } else {
+        res.status(401);
+        res.json({
+          error: true,
+          message: 'You are not authorized to complete this action! Go home!'
+        });
+
+        return;
       }
     });
-
-    if(!_isOk) {
-      res.status(401);
-      res.json({
-        error: true,
-        message: 'You are not authorized to complete this action! Go home!'
-      });
-
-      return;
-
-    } else {
-      next();
-
-    }
 
   };
 
@@ -203,8 +220,9 @@ function authorize(types) {
 //  - /articles/:id/comments
 
 // GET /articles
-app.get('/articles', function getArticles(req, res, next) {
+app.get('/articles', authorize(['admin']), function getArticles(req, res, next) {
 
+  // Retrieve all the Articles
   Article.find({}, function getAllArticles(err, docs) {
     if(err) {
       return next(err);
@@ -216,67 +234,91 @@ app.get('/articles', function getArticles(req, res, next) {
 });
 
 // GET /comments
-// @TODO Add Authorization
 // ONLY ADMIN CAN VIEW/PROCEED
-
 app.get('/comments', function getComments(req, res, next) {
+
+  // Retrieve all the Comments
+  Article.find({}, function getAllArticles(err, docs) {
+    if(err) {
+      return next(err);
+    }
+
+    res.json(docs);
+  });
 
 });
 
 // GET /comments/:id
-app.get('/comments/:commentId',  function getComment(req, res, next) {
+// Retrieve a specific Comment with a given id
+app.get('/comments/:commentId', authorize(['consumer', 'admin']), function getComment(req, res, next) {
 
   var commentId = req.params.commentId;
-  var comment;
 
-  DB.comments.forEach(function iterator(item, index, arr) {
-    if(commentId === item.id) {
-      comment = item;
+  // Query DB for the specific comment with the given ID
+  Comment.findById(commentId, function findComment(err, comment) {
+    if(err) {
+      return next(err);
+    }
+
+    // If comment find return it
+    if(comment) {
+      res.json(comment);
+
+    } else {
+      res.status(404);
+      res.json({
+        error: true,
+        message: 'Comment Requested Not Found!',
+        status: 404
+      });
+
     }
   });
-
-  if(comment) {
-    res.json(comment);
-
-  } else {
-    res.status(404);
-    res.json({
-      error: true,
-      message: 'Comment Requested Not Found!'
-    });
-  }
 
 });
 
 // GET /articles/:id
-app.get('/articles/:articleId', function getArticles(req, res, next) {
+app.get('/articles/:articleId', authorize(['admin', 'consumer']), function getArticles(req, res, next) {
 
   var articleId = req.params.articleId;
-  var article;
 
+  // Query DB for an article with the given ID
   Article.findById(articleId, function cb(err, article) {
     if(err) {
       return next(err);
     }
 
-    res.json(article);
+    // If article find return it
+    if(article) {
+      res.json(article);
+
+    } else {
+      res.status(404);
+      res.json({
+        error: true,
+        message: 'Article Requested Not Found!',
+        status: 404
+      });
+
+    }
   });
 
 });
 
 // GET /articles/:id/comments
-app.get('/articles/:articleId/comments', function getArticleComments(req, res, next) {
+app.get('/articles/:articleId/comments', authorize(['admin', 'consumer']), function getArticleComments(req, res, next) {
 
   var articleId = req.params.articleId;
-  var comments  = [];
 
-  DB.comments.forEach(function iterator(item, index, arr) {
-    if(articleId === item.article) {
-      comments.push(item);
+  // Query DB for comments of a specific article with the given ID
+  Comment.find({ article: articleId }, function cb(err, comments) {
+    if(err) {
+      return next(err);
     }
-  });
 
-  res.json(comments);
+    res.json(comments);
+
+  });
 
 });
 
@@ -293,7 +335,7 @@ app.post('/articles', function createArticle(req, res, next) {
   var now     = new Date();
 
   // CREATE AN ARTICLE TYPE
-  var article = new Article({
+  var newArticle = new Article({
     author: body.author,
     content: body.content,
     title: body.title,
@@ -302,11 +344,12 @@ app.post('/articles', function createArticle(req, res, next) {
   });
 
   // SAVE THE NEW ARTICLE TO THE DB
-  article.save(function cb(err, article) {
+  newArticle.save(function cb(err, article) {
     if(err) {
       return next(err);
     }
 
+    // Return Article
     res.status(201);
     res.json(article);
 
@@ -317,12 +360,11 @@ app.post('/articles', function createArticle(req, res, next) {
 });
 
 // POST /comments
-app.post('/comments', function createComment(req, res, next) {
+app.post('/comments', authorize(['consumer', 'admin' ]), function createComment(req, res, next) {
   var body    = req.body;
   var now     = new Date();
 
-  var comment = {
-    id: '' + DB.comments.length,
+  var newComment = {
     article: body.article,
     content: body.content,
     author: body.author,
@@ -330,16 +372,18 @@ app.post('/comments', function createComment(req, res, next) {
     created_at: now
   };
 
-  DB.articles.forEach(function iter(article) {
-    if(body.article === article.id) {
-      article.comments.push(comment.id);
+  // SAVE THE NEW COMMENT TO THE DB
+  newComment.save(function cb(err, comment) {
+    if(err) {
+      return next(err);
     }
+
+    // Return Comment
+    res.status(201);
+    res.json(comment);
+
   });
 
-
-  DB.comments.push(comment);
-
-  res.json(comment);
 });
 
 // - DELETE(Deleting a resource)
@@ -350,94 +394,116 @@ app.post('/comments', function createComment(req, res, next) {
 //  - /articles/:id/comments
 
 // DELETE /articles
-// @TODO Add Authorization
-app.delete('/articles', function deleteArticles(req, res, next) {
-  DB.articles = [];
+app.delete('/articles', authorize(['admin']),  function deleteArticles(req, res, next) {
 
-  res.json({
-    message: 'Articles Deleted!'
+  // Remove All Documents in the articles collection
+  Article.remove({}, function removeAll(err) {
+    if(err) {
+      return next(err);
+    }
+
+    res.json({
+      message: 'Articles Deleted!'
+    });
   });
 });
 
 // DELETE /comments
-// @TODO Add Authorization
-app.delete('/comments', function deleteComment(req, res, next) {
-  DB.comments = [];
+app.delete('/comments', authorize(['admin']),  function deleteComment(req, res, next) {
 
-  res.json({
-    message: 'Comments Deleted!'
+  // Remove All Documents in the comments collection
+  Comment.remove({}, function removeAll(err) {
+    if(err) {
+      return next(err);
+    }
+
+    res.json({
+      message: 'Comments Deleted!'
+    });
   });
+
 });
 
 // DELETE /articles/:id
-app.delete('/articles/:articleId', function deleteArticle(req, res, next) {
+app.delete('/articles/:articleId', authorize(['admin', 'consumer']),  function deleteArticle(req, res, next) {
 
   var articleId = req.params.articleId;
-  var article;
 
-  DB.articles.forEach(function iterator(item, index, arr) {
-    if(articleId === item.id) {
-      article = item;
+  // Find an article with the given Id and remove
+  Article.findOneAndRemove({ _id: articleId }, function removeArticle(err, article) {
+    if(err) {
+      return next(err);
     }
+
+    if(!article) {
+      res.status(404);
+      res.json({
+        error: true,
+        message: 'Article To Be Deleted Not Found!',
+        status: 404
+      });
+      return;
+    }
+
+    // Find Related Comments and Remove Consequently
+    Comment.remove({ article: article._id }, function removeComments(err) {
+      if(err) {
+        return next(err);
+      }
+
+      res.json(article);
+    });
   });
 
-  if(article) {
-    DB.comments = DB.comments.filter(function iter(item, index, arr) {
-      return item.article !== article.id;
-    });
 
-    DB.articles.splice(article.id, 1);
-  }
-
-  res.json(article || {});
 });
 
 // DELETE /comments/:id
-app.delete('/comments/:commentId', function deleteComment(req, res, next) {
+app.delete('/comments/:commentId', authorize(['admin', 'consumer']),  function deleteComment(req, res, next) {
 
   var commentId = req.params.commentId;
-  var comment;
-  var article;
 
-  DB.comments.forEach(function iterator(item, index, arr) {
-    if(commentId === item.id) {
-      comment = item;
+  // Find the comment with the given Id and Remove it
+  Comment.findOneAndRemove({ _id: commentId }, function removeComment(err, comment) {
+    if(err) {
+      return next(err);
     }
+
+    if(!comment) {
+      res.status(404);
+      res.json({
+        error: true,
+        message: 'Comment To Be Deleted Not Found!',
+        status: 404
+      });
+    }
+
+    // Remove Comment from Article Consequently By Updating the comments attribute
+    Article.findOneAndUpdate({ _id: comment.article }, { $pull: { comments: comment._id } }, function updateArticle(err, article) {
+      if(err) {
+        return next(err);
+      }
+
+      res.json(comment);
+    });
   });
 
-  if(comment) {
-    DB.articles.forEach(function iter2(item) {
-      if(comment.article === item.id) {
-        article = item;
-      }
-    });
-
-    article.comments = article.comments.filter(function iter(item, index, arr) {
-      return item !== comment.id;
-    });
-
-    DB.comments.splice(comment.id, 1);
-  }
-
-  res.json(comment || {});
 });
 
 // DELETE /articles/:id/comments
-app.delete('/articles/:articleId/comments', function deleteArticleComments(req, res, next) {
+app.delete('/articles/:articleId/comments', authorize(['admin']), function deleteArticleComments(req, res, next) {
 
   var articleId = req.params.articleId;
-  var comment;
-  var article;
 
-  DB.articles.forEach(function iterator(item, index, arr) {
-    if(articleId === item.id) {
-      item.comments = [];
-      article = item;
+  // Reset Comments attribute for a given Article
+  Article.findOneAndUpdate({ _id: comment.article }, { $set: { comments: [] } }, function updateArticle(err, article) {
+    if(err) {
+      return next(err);
     }
+
+    res.json(article);
   });
 
-
-  res.json(article || {});
 });
 
 // - PUT(Updating a resource)
@@ -448,88 +514,95 @@ app.delete('/articles/:articleId/comments', function deleteArticleComments(req, 
 //  - /articles/:id/comments
 
 // PUT /articles
-// @TODO Add Authorization
-app.put('/articles', function updateArticles(req, res, next) {
+app.put('/articles', authorize(['admin']),  function updateArticles(req, res, next) {
   var body = req.body;
 
-  var _keys = Object.keys(body);
+  // Update all articles using the given body data;
+  Article.update(body, function updateAll(err) {
+    if(err) {
+      return next(err);
+    }
 
-  DB.articles.forEach(function iter1(article, index, arr) {
-    _keys.forEach(function iter2(attr) {
-      if(article[attr]) {
-        article[attr] = body[attr];
-      }
+    res.json({
+      message: 'All Articles updated successfully'
     });
+
   });
 
-  res.json({
-    message: 'All Articles updated successfully'
-  });
+
 });
 
 // PUT /comments
-// @TODO Add Authorization
-app.put('/comments', function updateComments(req, res, next) {
+app.put('/comments', authorize(['admin']), function updateComments(req, res, next) {
   var body = req.body;
 
-  var _keys = Object.keys(body);
+  // Update all articles using the given body data;
+  Comment.update(body, function updateAll(err) {
+    if(err) {
+      return next(err);
+    }
 
-  DB.comments.forEach(function iter1(comment, index, arr) {
-    _keys.forEach(function iter2(attr) {
-      if(comment[attr]) {
-        comment[attr] = body[attr];
-      }
+    res.json({
+      message: 'All Comments updated successfully'
     });
+
   });
 
-  res.json({
-    message: 'All comments updated successfully'
-  });
 });
 
 // PUT /articles/:id
-app.put('/articles/:articleId', function updateArticle(req, res, next) {
+app.put('/articles/:articleId', authorize(['consumer', 'admin']),  function updateArticle(req, res, next) {
   var body      = req.body;
   var articleId = req.params.articleId;
-  var _keys     = Object.keys(body);
-  var article;
 
-  DB.articles.forEach(function iterator(item, index, arr) {
-    if(articleId === item.id) {
-      article = item;
+  // Update the given Article using the body data
+  Article.findByIdAndUpdate(articleId, body, function update(err, article) {
+    if(err) {
+      return next(err);
+    }
 
-      _keys.forEach(function iter2(attr) {
-        if(article[attr]) {
-          article[attr] = body[attr];
-        }
+    if(!article) {
+      res.status(404);
+      res.json({
+        error: true,
+        message: 'Article To Be Updated Not Found!',
+        status: 404
       });
+      return;
+
+    } else {
+      res.json(article);
+
     }
   });
-
-  res.json(article || {});
 
 });
 
 // PUT /comments/:id
-app.put('/comments/:commentId', function updateComment(req, res, next) {
+app.put('/comments/:commentId', authorize(['admin', 'consumer']), function updateComment(req, res, next) {
   var body      = req.body;
   var commentId = req.params.commentId;
-  var _keys     = Object.keys(body);
-  var comment;
 
-  DB.comments.forEach(function iterator(item, index, arr) {
-    if(commentId === item.id) {
-      comment = item;
+  // Update the given Comment using the body data
+  Comment.findByIdAndUpdate(commentId, body, function update(err, comment) {
+    if(err) {
+      return next(err);
+    }
 
-      _keys.forEach(function iter2(attr) {
-        if(comment[attr]) {
-          comment[attr] = body[attr];
-        }
+    if(!comment) {
+      res.status(404);
+      res.json({
+        error: true,
+        message: 'Comment To Be Updated Not Found!',
+        status: 404
       });
+      return;
+
+    } else {
+      res.json(comment);
+
     }
   });
-
-  res.json(comment || {});
 
 });
 
@@ -537,25 +610,27 @@ app.put('/comments/:commentId', function updateComment(req, res, next) {
 app.put('/articles/:articleId/comments', function updateArticle(req, res, next) {
   var body      = req.body;
   var articleId = req.params.articleId;
-  var _keys     = Object.keys(body);
-  var article;
 
-  DB.articles.forEach(function iterator(item, index, arr) {
-    if(articleId === item.id) {
-      article = item;
+  // Update comments of  the given Article using the body data
+  Article.findByIdAndUpdate(articleId, { $set: { comments: body } }, function update(err, article) {
+    if(err) {
+      return next(err);
+    }
 
-      article.comments.forEach(function iter1(comment) {
-        _keys.forEach(function iter2(attr) {
-          if(comment[attr]) {
-            comment[attr] = body[attr];
-          }
-        });
+    if(!article) {
+      res.status(404);
+      res.json({
+        error: true,
+        message: 'Article To Be Updated Not Found!',
+        status: 404
       });
+      return;
+
+    } else {
+      res.json(article);
 
     }
   });
-
-  res.json(article || {});
 
 });
 
